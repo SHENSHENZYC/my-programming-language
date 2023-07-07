@@ -1,5 +1,6 @@
 from string_with_arrows import string_with_arrows
 
+
 ############################################
 # CONSTANTS
 ############################################
@@ -33,7 +34,34 @@ class IllegalCharError(Error):
 
 class InvalidSyntaxError(Error):
     def __init__(self, start_pos, end_pos, error_message):
-        super(InvalidSyntaxError, self).__init__(start_pos, end_pos, 'InvalidSyntaxError', error_message)        
+        super(InvalidSyntaxError, self).__init__(start_pos, end_pos, 'InvalidSyntaxError', error_message)
+        
+
+class RuntimeError_(Error):
+    def __init__(self, start_pos, end_pos, error_message, context):
+        super(RuntimeError_, self).__init__(start_pos, end_pos, 'RuntimeError', error_message)
+        self.context = context
+
+    def generate_traceback(self):
+        """Trace back hierarchically to where the error happens in the main program."""
+        result = ''
+        pos = self.start_pos
+        context = self.context
+        
+        while context:
+            result = f'    File {pos.file_name}, line {pos.ln + 1}, in {context.display_name}\n' + result
+            pos = context.parent_entry_pos
+            context = context.parent
+        
+        return 'Traceback (most recent call last):\n' + result
+
+    def as_string(self):
+        res = self.generate_traceback()
+        res +=  f'{self.error_name}: {self.error_message}\n' \
+            + string_with_arrows(self.start_pos.file_text, self.start_pos, self.end_pos)
+        
+        return res
+
 
 ############################################
 # POSITION
@@ -72,6 +100,7 @@ TT_PLUS = 'PLUS'
 TT_MINUS = 'MINUS'
 TT_MUL = 'MUL'
 TT_DIV = 'DIV'
+TT_POW = 'POW'
 TT_LPAREN = 'LPAREN'
 TT_RPAREN = 'RPAREN'
 TT_EOF = 'EOF'
@@ -142,6 +171,9 @@ class Lexer:
             elif self.curr_char == '/':
                 tokens.append(Token(TT_DIV, start_pos=self.curr_pos))
                 self.advance()
+            elif self.curr_char == '^':
+                tokens.append(Token(TT_POW, start_pos=self.curr_pos))
+                self.advance()
             elif self.curr_char == '(':
                 tokens.append(Token(TT_LPAREN, start_pos=self.curr_pos))
                 self.advance()
@@ -191,6 +223,9 @@ class NumberNode:
     def __init__(self, token):
         self.token = token
         
+        self.start_pos = self.token.start_pos
+        self.end_pos = self.token.end_pos
+        
     def __repr__(self):
         return f'{self.token}'
     
@@ -199,6 +234,9 @@ class BinOpNode:
         self.left_node = left_node
         self.operator = operator
         self.right_node = right_node
+        
+        self.start_pos = self.left_node.start_pos
+        self.end_pos = self.right_node.end_pos
     
     def __repr__(self):
         return f'({self.left_node}, {self.operator}, {self.right_node})'
@@ -207,6 +245,9 @@ class UnaryOpNode:
     def __init__(self, operator, node):
         self.operator = operator
         self.node = node
+        
+        self.start_pos = self.operator.start_pos
+        self.end_pos = self.node.end_pos
         
     def __repr__(self):
         return f'({self.operator}, {self.node})'
@@ -262,22 +303,15 @@ class Parser:
     
     # Components of an expression
     
-    def factor(self):
-        """Create a factor node. See grammar.txt for reference."""
+    def _atom(self):
+        """Create an atom node. See grammar.txt for reference"""
         parse_result = ParseResult()
         token = self.curr_token
-        
-        # check if this factor starts with an unary operator
-        if token.type in (TT_PLUS, TT_MINUS):
-            parse_result.register(self.advance())
-            factor = parse_result.register(self.factor())
-            if parse_result.error: return parse_result
-            return parse_result.success(UnaryOpNode(token, factor))
         
         # check if this factor starts with an opening parenthesis
         if token.type == TT_LPAREN:
             parse_result.register(self.advance())
-            expr = parse_result.register(self.expr())
+            expr = parse_result.register(self._expr())
             if parse_result.error: return parse_result
             
             # looking to a closing parenthesis
@@ -294,26 +328,47 @@ class Parser:
             parse_result.register(self.advance())
             return parse_result.success(NumberNode(token))
         
-        return parse_result.failure(InvalidSyntaxError(token.start_pos, token.end_pos, 'Expected int or float'))
+        return parse_result.failure(InvalidSyntaxError(token.start_pos,
+                                                       token.end_pos,
+                                                       "Expected int, float, '+', '-' or '('"))
+        
+    def _power(self):
+        return self._bin_op(self._atom, (TT_POW, ), self._factor)
     
-    def term(self):
-        """Create a term node. See grammar.txt for reference."""
-        return self._bin_op(self.factor, (TT_MUL, TT_DIV))
-    
-    def expr(self):
-        """Create a expression node. See grammar.txt for reference."""
-        return self._bin_op(self.term, (TT_PLUS, TT_MINUS))
-    
-    def _bin_op(self, func, ops):
+    def _factor(self):
+        """Create a factor node. See grammar.txt for reference."""
         parse_result = ParseResult()
-        left = parse_result.register(func())
+        token = self.curr_token
+        
+        # check if this factor starts with an unary operator
+        if token.type in (TT_PLUS, TT_MINUS):
+            parse_result.register(self.advance())
+            factor = parse_result.register(self._factor())
+            if parse_result.error: return parse_result
+            return parse_result.success(UnaryOpNode(token, factor))
+        
+        return self._power()
+    
+    def _term(self):
+        """Create a term node. See grammar.txt for reference."""
+        return self._bin_op(self._factor, (TT_MUL, TT_DIV))
+    
+    def _expr(self):
+        """Create a expression node. See grammar.txt for reference."""
+        return self._bin_op(self._term, (TT_PLUS, TT_MINUS))
+    
+    def _bin_op(self, left_func, ops, right_func=None):
+        if right_func is None: right_func = left_func
+        
+        parse_result = ParseResult()
+        left = parse_result.register(left_func())
         
         if parse_result.error: return parse_result
         
         while self.curr_token.type in ops:
             operator = self.curr_token
             parse_result.register(self.advance())
-            right = parse_result.register(func())
+            right = parse_result.register(right_func())
             
             # check error in each recursion iteration
             if parse_result.error: return parse_result
@@ -326,7 +381,7 @@ class Parser:
     
     def parse(self):
         """Generate an abstract syntax tree for the expression from the given list of tokens."""
-        parse_result = self.expr()
+        parse_result = self._expr()
         
         if (not parse_result.error) and (self.curr_token.type != TT_EOF):
             return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
@@ -337,6 +392,145 @@ class Parser:
     
 
 ############################################
+# VALUES
+############################################
+
+class Number:
+    def __init__(self, value):
+        self.value = value
+        self.set_pos()
+        self.set_context()
+        
+    def set_pos(self, start_pos=None, end_pos=None):
+        self.start_pos = start_pos
+        self.end_pos = end_pos
+        return self
+    
+    def set_context(self, context=None):
+        self.context = context
+        return self
+    
+    def add(self, other):
+        if isinstance(other, Number):
+            return Number(self.value + other.value).set_context(self.context), None
+        
+    def subtract(self, other):
+        if isinstance(other, Number):
+            return Number(self.value - other.value).set_context(self.context), None
+        
+    def multiply(self, other):
+        if isinstance(other, Number):
+            return Number(self.value * other.value).set_context(self.context), None
+        
+    def divide_by(self, other):
+        if isinstance(other, Number):
+            # check if the divided is 0
+            if other.value == 0:
+                return None, RuntimeError_(other.start_pos, other.end_pos, 'Division by zero', self.context)
+            
+            return Number(self.value / other.value).set_context(self.context), None
+        
+    def power(self, other):
+        if isinstance(other, Number):
+            return Number(self.value ** other.value).set_context(self.context), None
+        
+    def __repr__(self):
+        return str(self.value)
+
+
+############################################
+# RUNTIME RESULT
+############################################
+
+class RuntimeResult:
+    def __init__(self):
+        self.value = None
+        self.error = None
+        
+    def register(self, result):
+        if result.error: self.error = result.error
+        return result.value
+    
+    def success(self, value):
+        self.value = value
+        return self
+    
+    def failure(self, error):
+        self.error = error
+        return self
+
+
+############################################
+# CONTEXT
+############################################
+
+class Context:
+    def __init__(self, display_name, parent=None, parent_entry_pos=None):
+        self.display_name = display_name
+        self.parent = parent
+        self.parent_entry_pos = parent_entry_pos
+
+
+############################################
+# INTERPRETER
+############################################
+
+class Interpreter:
+    def visit(self, node, context):
+        """Walk through all the child nodes of the given node."""
+        method_name = f'_visit_{type(node).__name__}'
+        method = getattr(self, method_name, self._no_visit_method)
+        
+        return method(node, context)
+    
+    def _no_visit_method(self, node, context):
+        raise Exception(f'No _visit_{type(node).__name__} method defined')
+    
+    def _visit_NumberNode(self, node, context):
+        result = Number(node.token.value).set_context(context).set_pos(node.start_pos, node.end_pos)
+        return RuntimeResult().success(result)
+        
+    def _visit_BinOpNode(self, node, context):
+        runtime_result = RuntimeResult()
+        left = runtime_result.register(self.visit(node.left_node, context))
+        if runtime_result.error: return runtime_result
+        right = runtime_result.register(self.visit(node.right_node, context))
+        if runtime_result.error: return runtime_result
+        
+        # execute binary operations
+        error = None
+        if node.operator.type == TT_PLUS:
+            result, error = left.add(right)
+        elif node.operator.type == TT_MINUS:
+            result, error = left.subtract(right)
+        if node.operator.type == TT_MUL:
+            result, error = left.multiply(right)
+        if node.operator.type == TT_DIV:
+            result, error = left.divide_by(right)
+        if node.operator.type == TT_POW:
+            result, error = left.power(right)
+            
+        if error:
+            return runtime_result.failure(error)
+        else:
+            return runtime_result.success(result.set_pos(node.start_pos, node.end_pos))
+        
+    def _visit_UnaryOpNode(self, node, context):
+        runtime_result = RuntimeResult()
+        result = runtime_result.register(self.visit(node.node, context))
+        if runtime_result.error: return runtime_result
+        
+        error = None
+        if node.operator.type == TT_MINUS:
+            result, error = Number(-result.value)
+            
+        if error:
+            return runtime_result.failure(error)
+        else:
+            return runtime_result.success(result.set_pos(node.start_pos, node.end_pos))
+    
+
+############################################
 # RUN
 ############################################
 
@@ -344,11 +538,16 @@ def run(file_name, text):
     """Return a list of tokens and error messages (None for no errors)."""
     lexer = Lexer(file_name, text)
     tokens, error = lexer.tokenize()
-    
     if error: return None, error
     
     # generate an abstract syntax tree
     parser = Parser(tokens)
     ast = parser.parse()
+    if ast.error: return None, ast.error
     
-    return ast.node, ast.error
+    # interpret the ast
+    interpreter = Interpreter()
+    context = Context('<main>')
+    result = interpreter.visit(ast.node, context)
+
+    return result.value, result.error
