@@ -1,3 +1,4 @@
+import string
 from string_with_arrows import string_with_arrows
 
 
@@ -6,6 +7,8 @@ from string_with_arrows import string_with_arrows
 ############################################
 
 NUM_CHARS = '0123456789.'
+LETTERS = string.ascii_letters
+LETTERS_DIGITS = LETTERS + '0123456789'
 
 
 ############################################
@@ -94,6 +97,7 @@ class Position:
 # TOKEN
 ############################################
 
+# Numeric expression
 TT_INT = 'INT'
 TT_FLOAT = 'FLOAT'
 TT_PLUS = 'PLUS'
@@ -104,6 +108,14 @@ TT_POW = 'POW'
 TT_LPAREN = 'LPAREN'
 TT_RPAREN = 'RPAREN'
 TT_EOF = 'EOF'
+
+# Variable assignment
+TT_IDENTIFIER = 'IDENTIFIER'
+TT_KEYWORD = 'KEYWORD'
+TT_EQ = 'EQ'
+
+# Pre-assigned keywords
+KEYWORDS = ('var', )
 
 
 class Token:
@@ -126,6 +138,10 @@ class Token:
             return f'{self.type}: {self.value}'
         else:
             return f'{self.type}'
+        
+    def match(self, type_, value):
+        """Check if the token matches given token type and value."""
+        return self.type == type_ and self.value == value
         
 
 class Lexer:
@@ -159,6 +175,8 @@ class Lexer:
                 self.advance()
             elif self.curr_char in NUM_CHARS:
                 tokens.append(self.make_number())
+            elif self.curr_char in LETTERS:
+                tokens.append(self.make_identifier())
             elif self.curr_char == '+':
                 tokens.append(Token(TT_PLUS, start_pos=self.curr_pos))
                 self.advance()
@@ -179,6 +197,9 @@ class Lexer:
                 self.advance()
             elif self.curr_char == ')':
                 tokens.append(Token(TT_RPAREN, start_pos=self.curr_pos))
+                self.advance()
+            elif self.curr_char == '=':
+                tokens.append(Token(TT_EQ, start_pos=self.curr_pos))
                 self.advance()
             else:
                 # return error message
@@ -214,6 +235,19 @@ class Lexer:
         else:
             return Token(TT_FLOAT, float(num_str), start_pos=start_pos, end_pos=self.curr_pos)
 
+    def make_identifier(self):
+        id_str = ''
+        start_pos = self.curr_pos.copy()
+        
+        while (self.curr_char is not None) and (self.curr_char in LETTERS_DIGITS + '_'):
+            id_str += self.curr_char
+            self.advance()
+        
+        # determine if id_str is an identifier or a keyword
+        token_type = TT_KEYWORD if id_str in KEYWORDS else TT_IDENTIFIER
+        
+        return Token(token_type, id_str, start_pos=start_pos, end_pos=self.curr_pos)
+    
 
 ############################################
 # NODES
@@ -251,6 +285,21 @@ class UnaryOpNode:
         
     def __repr__(self):
         return f'({self.operator}, {self.node})'
+    
+
+class VarAssignmentNode:
+    def __init__(self, var_name_token, value_node):
+        self.var_name_token = var_name_token
+        self.value_node = value_node
+        self.start_pos = self.var_name_token.start_pos
+        self.end_pos = self.var_name_token.end_pos
+    
+
+class VarAccessNode:
+    def __init__(self, var_name_token):
+        self.var_name_token = var_name_token
+        self.start_pos = self.var_name_token.start_pos
+        self.end_pos = self.var_name_token.end_pos
 
 
 ############################################
@@ -261,21 +310,24 @@ class ParseResult:
     def __init__(self):
         self.error = None
         self.node = None
+        self.advance_count = 0
+        
+    def register_advancement(self):
+        self.advance_count += 1
         
     def register(self, res):
-        """Take in either a ParseResult or a node, and return the node."""
-        if isinstance(res, ParseResult):
-            if res.error: self.error = res.error
-            return res.node
-        
-        return res
+        """Take in a ParseResult, and return the node."""
+        self.advance_count += res.advance_count
+        if res.error: self.error = res.error
+        return res.node
     
     def success(self, node):
         self.node = node
         return self
     
     def failure(self, error):
-        self.error = error
+        if (not self.error) or (self.advance_count == 0):
+            self.error = error
         return self
     
 
@@ -308,29 +360,38 @@ class Parser:
         parse_result = ParseResult()
         token = self.curr_token
         
-        # check if this factor starts with an opening parenthesis
+        # check if this atom starts with an opening parenthesis
         if token.type == TT_LPAREN:
-            parse_result.register(self.advance())
+            parse_result.register_advancement()
+            self.advance()
             expr = parse_result.register(self._expr())
             if parse_result.error: return parse_result
             
             # looking to a closing parenthesis
             if self.curr_token.type == TT_RPAREN:
-                parse_result.register(self.advance())
+                parse_result.register_advancement()
+                self.advance()
                 return parse_result.success(expr)
             else:
                 return parse_result.failure(InvalidSyntaxError(token.start_pos, 
                                                                token.end_pos, 
                                                                "Expected ')'"))
                 
-        # check if this factor is a valid int or float
+        # check if this atom is a valid int or float
         if token.type in (TT_INT, TT_FLOAT):
-            parse_result.register(self.advance())
+            parse_result.register_advancement()
+            self.advance()
             return parse_result.success(NumberNode(token))
+        
+        # check if this atom is an existing identifier
+        if token.type == TT_IDENTIFIER:
+            parse_result.register_advancement()
+            self.advance()
+            return parse_result.success(VarAccessNode(token))
         
         return parse_result.failure(InvalidSyntaxError(token.start_pos,
                                                        token.end_pos,
-                                                       "Expected int, float, '+', '-' or '('"))
+                                                       "Expected int, float, identifier, '+', '-' or '('"))
         
     def _power(self):
         return self._bin_op(self._atom, (TT_POW, ), self._factor)
@@ -342,7 +403,8 @@ class Parser:
         
         # check if this factor starts with an unary operator
         if token.type in (TT_PLUS, TT_MINUS):
-            parse_result.register(self.advance())
+            parse_result.register_advancement()
+            self.advance()
             factor = parse_result.register(self._factor())
             if parse_result.error: return parse_result
             return parse_result.success(UnaryOpNode(token, factor))
@@ -355,7 +417,40 @@ class Parser:
     
     def _expr(self):
         """Create a expression node. See grammar.txt for reference."""
-        return self._bin_op(self._term, (TT_PLUS, TT_MINUS))
+        parse_result = ParseResult()
+        if self.curr_token.match(TT_KEYWORD, 'var'):
+            parse_result.register_advancement()
+            self.advance()
+            # check if next token is an identifier
+            if self.curr_token.type != TT_IDENTIFIER:
+                return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                        self.curr_token.end_pos, 
+                                                        'Expected identifier'))
+            var_name = self.curr_token
+            
+            parse_result.register_advancement()
+            self.advance()
+            # check if next token is an equal sign
+            if self.curr_token.type != TT_EQ:
+                return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                        self.curr_token.end_pos, 
+                                                        "Expected '='"))
+                
+            parse_result.register_advancement()
+            self.advance()
+            expr = parse_result.register(self._expr())
+            
+            if parse_result.error: return parse_result
+            return parse_result.success(VarAssignmentNode(var_name, expr))
+             
+        
+        node = parse_result.register(self._bin_op(self._term, (TT_PLUS, TT_MINUS)))
+        if parse_result.error: 
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos,
+                                                           self.curr_token.end_pos,
+                                                           "Expected int, float, identifier, 'var', '+', '-' or '('"))
+        
+        return parse_result.success(node)
     
     def _bin_op(self, left_func, ops, right_func=None):
         if right_func is None: right_func = left_func
@@ -367,7 +462,8 @@ class Parser:
         
         while self.curr_token.type in ops:
             operator = self.curr_token
-            parse_result.register(self.advance())
+            parse_result.register_advancement()
+            self.advance()
             right = parse_result.register(right_func())
             
             # check error in each recursion iteration
@@ -434,6 +530,11 @@ class Number:
         if isinstance(other, Number):
             return Number(self.value ** other.value).set_context(self.context), None
         
+    def copy(self):
+        copy = Number(self.value)
+        copy.set_pos(self.start_pos, self.end_pos).set_context(self.context)
+        return copy
+        
     def __repr__(self):
         return str(self.value)
 
@@ -469,6 +570,31 @@ class Context:
         self.display_name = display_name
         self.parent = parent
         self.parent_entry_pos = parent_entry_pos
+        self.symbol_table = None
+        
+
+############################################
+# SYMBOL TABLE
+############################################
+
+class SymbolTable:
+    def __init__(self):
+        self.symbols = dict()
+        self.parent = None  # to keep track of the stack frame that holds all variables in the symbol table
+    
+    def get(self, var_name):
+        value = self.symbols.get(var_name, None)
+        
+        if (value is None) and self.parent:
+            return self.parent.get(var_name, None)
+        
+        return value
+    
+    def set(self, var_name, value):
+        self.symbols[var_name] = value
+        
+    def remove(self, var_name):
+        del self.symbols[var_name]
 
 
 ############################################
@@ -528,11 +654,41 @@ class Interpreter:
             return runtime_result.failure(error)
         else:
             return runtime_result.success(result.set_pos(node.start_pos, node.end_pos))
+        
+    def _visit_VarAssignmentNode(self, node, context):
+        runtime_result = RuntimeResult()
+        var_name = node.var_name_token.value
+        value = runtime_result.register(self.visit(node.value_node, context))
+        
+        if runtime_result.error: return runtime_result
+        
+        context.symbol_table.set(var_name, value)
+        return runtime_result.success(value)
+        
+    def _visit_VarAccessNode(self, node, context):
+        runtime_result = RuntimeResult()
+        var_name = node.var_name_token.value
+        value = context.symbol_table.get(var_name)
+        
+        if not value:
+            return runtime_result.failure(RuntimeError_(node.start_pos, 
+                                                        node.end_pos, 
+                                                        f"'{var_name}' is not defined", 
+                                                        context))
+        
+        # reassign the value with starting and ending position when accessed
+        value = value.copy().set_pos(node.start_pos, node.end_pos)
+        
+        return runtime_result.success(value)        
     
 
 ############################################
 # RUN
 ############################################
+
+# set up symbol table for global variables
+global_symbol_table = SymbolTable()
+global_symbol_table.set('NULL', Number(0))
 
 def run(file_name, text):
     """Return a list of tokens and error messages (None for no errors)."""
@@ -548,6 +704,7 @@ def run(file_name, text):
     # interpret the ast
     interpreter = Interpreter()
     context = Context('<main>')
+    context.symbol_table = global_symbol_table
     result = interpreter.visit(ast.node, context)
 
     return result.value, result.error
