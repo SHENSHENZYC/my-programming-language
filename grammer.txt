@@ -21,6 +21,7 @@ atom        : INT|FLOAT|IDENTIFIER|STRING
             : for-expr
             : while-expr
             : func-def
+            : list-expr
 
 if-expr     : KEYWORD:IF expr KEYWORD:THEN expr
               (KEYWORD:ELIF expr KEYWORD:THEN expr)*
@@ -34,3 +35,5 @@ while-expr  : KEYWORD:WHILE expr KEYWORD:THEN expr
 func-def    : KEYWORD:FUNC IDENTIFIER?
               LPAREN (IDENTIFIER (COMMA IDENTIFIER)*)? RPAREN
               ARROW expr
+
+list-expr   : LSQUARE (expr (COMMA expr)*)? RSQUARE
