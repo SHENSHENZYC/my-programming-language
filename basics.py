@@ -112,6 +112,7 @@ TT_DIV = 'DIV'
 TT_POW = 'POW'
 TT_LPAREN = 'LPAREN'
 TT_RPAREN = 'RPAREN'
+TT_STRING = 'STRING'
 TT_EOF = 'EOF'
 
 # Variable assignment
@@ -245,6 +246,8 @@ class Lexer:
             elif self.curr_char == ',':
                 tokens.append(Token(TT_COMMA, start_pos=self.curr_pos))
                 self.advance()
+            elif self.curr_char == '"':
+                tokens.append(self._make_string())
             else:
                 # return error message
                 start_pos = self.curr_pos.copy()
@@ -357,6 +360,37 @@ class Lexer:
             self.advance()
         
         return Token(token_type, start_pos=start_pos, end_pos=self.curr_pos)
+    
+    def _make_string(self):
+        """Generate a string token."""
+        string = ''
+        start_pos = self.curr_pos.copy()        
+        escape_char = False
+        self.advance()
+        
+        escape_character_dict = {
+            'n': '\n', 
+            't': '\t', 
+            'r': '\r'
+        }
+        
+        while (self.curr_char is not None) and ((self.curr_char != '"') or escape_char):
+            # allow escape characters \n, \t, \r in a string
+            if escape_char:
+                string += escape_character_dict.get(self.curr_char, self.curr_char)
+                escape_char = False
+                self.advance()
+                continue
+
+            if self.curr_char == '\\':
+                escape_char = True
+            else:
+                string += self.curr_char
+            self.advance()
+                        
+        self.advance()
+        
+        return Token(TT_STRING, string, start_pos=start_pos, end_pos=self.curr_pos)
 
 ############################################
 # NODES
@@ -372,6 +406,18 @@ class NumberNode:
     def __repr__(self):
         return f'{self.token}'
     
+
+class StringNode:
+    def __init__(self, token):
+        self.token = token
+        
+        self.start_pos = self.token.start_pos
+        self.end_pos = self.token.end_pos
+        
+    def __repr__(self):
+        return f'{self.token}'
+    
+    
 class BinOpNode:
     def __init__(self, left_node, operator, right_node):
         self.left_node = left_node
@@ -383,6 +429,7 @@ class BinOpNode:
     
     def __repr__(self):
         return f'({self.left_node}, {self.operator}, {self.right_node})'
+    
     
 class UnaryOpNode:
     def __init__(self, operator, node):
@@ -776,6 +823,12 @@ class Parser:
             self.advance()
             return parse_result.success(NumberNode(token))
         
+        # check if this atom is a string
+        if token.type == TT_STRING:
+            parse_result.register_advancement()
+            self.advance()
+            return parse_result.success(StringNode(token))
+        
         # check if this atom is an existing identifier
         if token.type == TT_IDENTIFIER:
             parse_result.register_advancement()
@@ -1151,6 +1204,36 @@ class Number(Value):
         return str(self.value)
 
 
+
+class String(Value):
+    def __init__(self, value):
+        super().__init__()
+        self.value = value
+        
+    def add(self, other):
+        if isinstance(other, String):
+            return String(self.value + other.value).set_context(self.context), None
+        else:
+            return None, Value.illegal_operation(self.start_pos, self.end_pos)
+        
+    def multiply(self, other):
+        if isinstance(other, Number):
+            return String(self.value * int(other.value)).set_context(self.context), None
+        else:
+            return None, Value.illegal_operation(self.start_pos, self.end_pos)
+        
+    def is_true(self):
+        return len(self.value) > 0
+    
+    def copy(self):
+        copy = String(self.value)
+        copy.set_pos(self.start_pos, self.end_pos).set_context(self.context)
+        return copy
+    
+    def __repr__(self):
+        return f'"{self.value}"'
+
+
 class Function(Value):
     def __init__(self, func_name, arg_names, body_node):
         super().__init__()
@@ -1270,6 +1353,10 @@ class Interpreter:
     
     def _visit_NumberNode(self, node, context):
         result = Number(node.token.value).set_context(context).set_pos(node.start_pos, node.end_pos)
+        return RuntimeResult().success(result)
+    
+    def _visit_StringNode(self, node, context):
+        result = String(node.token.value).set_context(context).set_pos(node.start_pos, node.end_pos)
         return RuntimeResult().success(result)
         
     def _visit_BinOpNode(self, node, context):
