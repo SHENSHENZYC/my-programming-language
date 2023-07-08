@@ -132,7 +132,11 @@ KEYWORDS = (
     'var', 
     'and', 
     'or', 
-    'not'
+    'not', 
+    'if', 
+    'elif', 
+    'then', 
+    'else'
 )
 
 
@@ -381,6 +385,18 @@ class VarAccessNode:
         self.var_name_token = var_name_token
         self.start_pos = self.var_name_token.start_pos
         self.end_pos = self.var_name_token.end_pos
+        
+
+class IfNode:
+    def __init__(self, cases, else_case):
+        self.cases = cases
+        self.else_case = else_case
+        self.start_pos = self.cases[0][0].start_pos
+        
+        if self.else_case:
+            self.end_pos = self.else_case.end_pos
+        else:
+            self.end_pos = self.cases[-1][0].end_pos
 
 
 ############################################
@@ -436,6 +452,63 @@ class Parser:
     
     # Components of an expression
     
+    def _if_expr(self):
+        """Create an expression node for if statement. See grammar.txt for reference"""
+        parse_result = ParseResult()
+        cases = []
+        else_case = None
+        
+        if not self.curr_token.match(TT_KEYWORD, 'if'):
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'if'"))
+            
+        parse_result.register_advancement()
+        self.advance()
+        
+        condition = parse_result.register(self._expr())
+        if parse_result.error: return parse_result
+        
+        if not self.curr_token.match(TT_KEYWORD, 'then'):
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'then'"))
+            
+        parse_result.register_advancement()
+        self.advance()
+        
+        expr = parse_result.register(self._expr())
+        if parse_result.error: return parse_result
+        cases.append((condition, expr))
+        
+        while self.curr_token.match(TT_KEYWORD, 'elif'):
+            parse_result.register_advancement()
+            self.advance()
+            
+            condition = parse_result.register(self._expr())
+            if parse_result.error: return parse_result
+            
+            if not self.curr_token.match(TT_KEYWORD, 'then'):
+                return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'then'"))
+            
+            parse_result.register_advancement()
+            self.advance()
+            
+            expr = parse_result.register(self._expr())
+            if parse_result.error: return parse_result
+            cases.append((condition, expr))
+        
+        if self.curr_token.match(TT_KEYWORD, 'else'):
+            parse_result.register_advancement()
+            self.advance()
+            
+            else_case = parse_result.register(self._expr())
+            if parse_result.error: return parse_result
+            
+        return parse_result.success(IfNode(cases, else_case))
+
     def _atom(self):
         """Create an atom node. See grammar.txt for reference"""
         parse_result = ParseResult()
@@ -469,6 +542,12 @@ class Parser:
             parse_result.register_advancement()
             self.advance()
             return parse_result.success(VarAccessNode(token))
+        
+        # check if this atom is an if expression
+        if token.match(TT_KEYWORD, 'if'):
+            if_expr = parse_result.register(self._if_expr())
+            if parse_result.error: return parse_result
+            return parse_result.success(if_expr)
         
         return parse_result.failure(InvalidSyntaxError(token.start_pos,
                                                        token.end_pos,
@@ -675,6 +754,9 @@ class Number:
         
     def not_(self):
         return Number(1 if self.value == 0 else 0).set_context(self.context), None
+    
+    def is_true(self):
+        return self.value != 0
         
     def copy(self):
         copy = Number(self.value)
@@ -843,8 +925,26 @@ class Interpreter:
         # reassign the value with starting and ending position when accessed
         value = value.copy().set_pos(node.start_pos, node.end_pos)
         
-        return runtime_result.success(value)        
+        return runtime_result.success(value)       
     
+    def _visit_IfNode(self, node, context):
+        runtime_result = RuntimeResult()
+        
+        for condition, expr in node.cases:
+            condition_value = runtime_result.register(self.visit(condition, context))
+            if runtime_result.error: return runtime_result
+            
+            if condition_value.is_true():
+                expr_value = runtime_result.register(self.visit(expr, context))
+                if runtime_result.error: return runtime_result
+                return runtime_result.success(expr_value)
+        
+        if node.else_case:
+            else_case_value = runtime_result.register(self.visit(node.else_case, context))
+            if runtime_result.error: return runtime_result
+            return runtime_result.success(else_case_value)
+        
+        return runtime_result.success(None)
 
 ############################################
 # RUN

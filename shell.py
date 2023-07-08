@@ -12,5 +12,5 @@ if __name__ == '__main__':
         
         if error:
             print(error.as_string())
-        else:
+        elif res:
             print(res)
