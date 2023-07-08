@@ -13,4 +13,4 @@ if __name__ == '__main__':
         if error:
             print(error.as_string())
         elif res:
-            print(res)
+            repr(print(res))
