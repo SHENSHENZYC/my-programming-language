@@ -136,7 +136,12 @@ KEYWORDS = (
     'if', 
     'elif', 
     'then', 
-    'else'
+    'else', 
+    'for', 
+    'to', 
+    'step',
+    'do',
+    'while'
 )
 
 
@@ -397,6 +402,27 @@ class IfNode:
             self.end_pos = self.else_case.end_pos
         else:
             self.end_pos = self.cases[-1][0].end_pos
+            
+
+class ForNode:
+    def __init__(self, var_name_token, start_value_node, end_value_node, body_node, step_value_node=None):
+        self.var_name_token = var_name_token
+        self.start_value_node = start_value_node
+        self.end_value_node = end_value_node
+        self.body_node = body_node
+        self.step_value_node = step_value_node
+        
+        self.start_pos = self.var_name_token.start_pos
+        self.end_pos = self.body_node.end_pos
+        
+
+class WhileNode:
+    def __init__(self, condition_node, body_node):
+        self.condition_node = condition_node
+        self.body_node = body_node
+        
+        self.start_pos = self.condition_node.start_pos
+        self.end_pos = self.body_node.end_pos
 
 
 ############################################
@@ -508,6 +534,93 @@ class Parser:
             if parse_result.error: return parse_result
             
         return parse_result.success(IfNode(cases, else_case))
+    
+    def _for_expr(self):
+        """Create an expression node for for loop statement. See grammar.txt for reference"""
+        parse_result = ParseResult()
+        
+        if not self.curr_token.match(TT_KEYWORD, 'for'):
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'for'"))
+        
+        parse_result.register_advancement()
+        self.advance()
+        
+        if self.curr_token.type != TT_IDENTIFIER:
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected identifier"))
+        
+        var_name = self.curr_token
+        parse_result.register_advancement()
+        self.advance()
+        
+        if self.curr_token.type != TT_EQ:
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected '='"))
+            
+        parse_result.register_advancement()
+        self.advance()
+        start_value = parse_result.register(self._expr())
+        if parse_result.error: return parse_result
+        
+        if not self.curr_token.match(TT_KEYWORD, 'to'):
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'to'"))
+            
+        parse_result.register_advancement()
+        self.advance()
+        end_value = parse_result.register(self._expr())
+        if parse_result.error: return parse_result
+        
+        step_value = None
+        if self.curr_token.match(TT_KEYWORD, 'step'):
+            parse_result.register_advancement()
+            self.advance()
+            step_value = parse_result.register(self._expr())
+            if parse_result.error: return parse_result
+        
+        if not self.curr_token.match(TT_KEYWORD, 'do'):
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'do'"))
+            
+        parse_result.register_advancement()
+        self.advance()
+        body = parse_result.register(self._expr())
+        if parse_result.error: return parse_result
+        
+        return parse_result.success(ForNode(var_name, start_value, end_value, body, step_value))
+        
+    
+    def _while_expr(self):
+        """Create an expression node for while loop statement. See grammar.txt for reference"""
+        parse_result = ParseResult()
+        
+        if not self.curr_token.match(TT_KEYWORD, 'while'):
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'while'"))
+            
+        parse_result.register_advancement()
+        self.advance()
+        condition = parse_result.register(self._expr())
+        if parse_result.error: return parse_result
+        
+        if not self.curr_token.match(TT_KEYWORD, 'do'):
+            return parse_result.failure(InvalidSyntaxError(self.curr_token.start_pos, 
+                                                           self.curr_token.end_pos, 
+                                                           "Expected keyword 'do'"))
+            
+        parse_result.register_advancement()
+        self.advance()
+        body = parse_result.register(self._expr())
+        if parse_result.error: return parse_result
+        
+        return parse_result.success(WhileNode(condition, body))
 
     def _atom(self):
         """Create an atom node. See grammar.txt for reference"""
@@ -548,6 +661,18 @@ class Parser:
             if_expr = parse_result.register(self._if_expr())
             if parse_result.error: return parse_result
             return parse_result.success(if_expr)
+        
+        # check if this atom is a for expression
+        if token.match(TT_KEYWORD, 'for'):
+            for_expr = parse_result.register(self._for_expr())
+            if parse_result.error: return parse_result
+            return parse_result.success(for_expr)
+        
+        # check if this atom is a while expression
+        if token.match(TT_KEYWORD, 'while'):
+            while_expr = parse_result.register(self._while_expr())
+            if parse_result.error: return parse_result
+            return parse_result.success(while_expr)
         
         return parse_result.failure(InvalidSyntaxError(token.start_pos,
                                                        token.end_pos,
@@ -892,7 +1017,7 @@ class Interpreter:
         
         error = None
         if node.operator.type == TT_MINUS:
-            result, error = Number(-result.value)
+            result, error = result.multiply(Number(-1))
         elif node.operator.match(TT_KEYWORD, 'not'):
             result, error = result.not_()
             
@@ -943,6 +1068,48 @@ class Interpreter:
             else_case_value = runtime_result.register(self.visit(node.else_case, context))
             if runtime_result.error: return runtime_result
             return runtime_result.success(else_case_value)
+        
+        return runtime_result.success(None)
+    
+    def _visit_ForNode(self, node, context):
+        runtime_result = RuntimeResult()
+        
+        start_value = runtime_result.register(self.visit(node.start_value_node, context))
+        if runtime_result.error: return runtime_result
+        
+        end_value = runtime_result.register(self.visit(node.end_value_node, context))
+        if runtime_result.error: return runtime_result
+        
+        step_value = Number(1)  # default value for step
+        if node.step_value_node:
+            step_value = runtime_result.register(self.visit(node.step_value_node, context))
+            if runtime_result.error: return runtime_result
+            
+        i = start_value.value
+        if step_value.value >= 0:
+            condition = lambda: i < end_value.value
+        else:
+            condition = lambda: i > end_value.value
+            
+        while condition():
+            context.symbol_table.set(node.var_name_token.value, Number(i))
+            i += step_value.value
+            runtime_result.register(self.visit(node.body_node, context))
+            if runtime_result.error: return runtime_result
+        
+        return runtime_result.success(None)
+        
+    def _visit_WhileNode(self, node, context):
+        runtime_result = RuntimeResult()
+        
+        while True:
+            condition_value = runtime_result.register(self.visit(node.condition_node, context))
+            if runtime_result.error: return runtime_result
+
+            if not condition_value.is_true(): break
+            
+            runtime_result.register(self.visit(node.body_node, context))
+            if runtime_result.error: return runtime_result
         
         return runtime_result.success(None)
 
