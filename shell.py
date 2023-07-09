@@ -8,7 +8,7 @@ if __name__ == '__main__':
         
         if text == 'quit' or text == 'exit':
             break
-        
+                
         res, error = run('<stdin>', text)
         
         if error:
