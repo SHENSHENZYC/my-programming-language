@@ -327,7 +327,7 @@ shell> add(1, 2)
 To help you get started with ShenShenPL, we have provided an example script called example.ss in the ShenShenPL Git repository. You can run the example script using the following command in the ShenShenPL shell:
 
 ```sspl
-run("examples/example.ss")
+shell> run("examples/example.ss")
 ```
 
 This script showcases various features of ShenShenPL and serves as a reference for understanding the language's syntax and capabilities. Feel free to explore the example script and modify it to experiment with different code patterns and language features.
